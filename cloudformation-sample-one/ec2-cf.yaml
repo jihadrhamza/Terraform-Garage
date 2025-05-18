@@ -1,0 +1,9 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploy Ec2 instance
+
+Resources:
+  WebAppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-00a929b66ed6e0de6
+      InstanceType: t2.micro
