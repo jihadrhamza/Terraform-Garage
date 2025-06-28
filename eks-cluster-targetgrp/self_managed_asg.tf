@@ -49,16 +49,35 @@ output "eks_private_key_pem" {
   sensitive = true
 }
 
-# The following block is no longer needed because we use SSM Parameter for the AMI
-# data "aws_ami" "eks_worker" {
-#   most_recent = true
-#   owners      = ["905418316695"] # Amazon EKS AMI account
-#   filter {
-#     name   = "name"
-#     values = ["amazon-eks-node-*-${var.kubernetes_version}-v*-"]
-#   }
-#   filter {
-#     name   = "architecture"
-#     values = ["x86_64"]
-#   }
-# }
+resource "aws_instance" "jump_server" {
+  ami                    = data.aws_ssm_parameter.eks_worker_ami.value
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.eks_subnet[0].id
+  key_name               = aws_key_pair.eks_key.key_name
+  associate_public_ip_address = true
+
+  vpc_security_group_ids = [aws_security_group.jump_server.id]
+
+  tags = {
+    Name = "eks-jump-server"
+  }
+}
+
+resource "aws_security_group" "jump_server" {
+  name        = "eks-jump-server-sg"
+  description = "Allow SSH and EKS API access from anywhere (for demo, restrict in production)"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
