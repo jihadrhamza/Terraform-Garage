@@ -59,7 +59,7 @@ resource "aws_launch_template" "node_lt" {
     name = aws_iam_instance_profile.node_profile.name
   }
   vpc_security_group_ids = [aws_security_group.node_sg.id]
-  user_data = base64encode("#!/bin/bash\n/etc/eks/bootstrap.sh demo-eks-cluster")
+  user_data = base64encode("#!/bin/bash\n/etc/eks/bootstrap.sh ${var.cluster_name}")
 }
 
 resource "aws_autoscaling_group" "nodes" {
@@ -74,7 +74,7 @@ resource "aws_autoscaling_group" "nodes" {
   }
 
   tag {
-    key                 = "kubernetes.io/cluster/demo-eks-cluster"
+    key                 = "kubernetes.io/cluster/${var.cluster_name}"
     value               = "owned"
     propagate_at_launch = true
   }

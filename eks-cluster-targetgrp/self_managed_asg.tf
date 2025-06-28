@@ -58,6 +58,25 @@ resource "aws_instance" "jump_server" {
 
   vpc_security_group_ids = [aws_security_group.jump_server.id]
 
+  user_data = <<-EOF
+    #!/bin/bash
+    exec > /var/log/user-data.log 2>&1
+    set -x
+    yum update -y
+    yum install -y curl unzip
+    # Install AWS CLI v2
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip awscliv2.zip
+    ./aws/install
+    # Install latest kubectl
+    curl -Lo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+    chmod +x /usr/local/bin/kubectl
+    export PATH=$PATH:/usr/local/bin
+    echo 'export PATH=$PATH:/usr/local/bin' >> /etc/profile
+    which kubectl
+    kubectl version --client || true
+  EOF
+
   tags = {
     Name = "eks-jump-server"
   }
