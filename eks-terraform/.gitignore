@@ -1,0 +1,16 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfstate.d/
+*.tfplan
+
+# Credentials – NEVER commit these
+terraform.tfvars
+*.auto.tfvars
+secrets.tf
+
+# OS
+.DS_Store
+Thumbs.db
