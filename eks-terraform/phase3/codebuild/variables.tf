@@ -13,6 +13,18 @@ variable "environment" {
   default     = "sandbox"
 }
 
+variable "deployment_suffix" {
+  description = <<-EOT
+    Optional suffix appended to the CodeBuild project name (e.g. "v2", "retry1").
+    GitHub Actions webhooks are keyed by (repo, CodeBuild project name), so if a
+    prior run already registered a webhook for this repo under the current
+    name and you can't delete it right now, bump this value to get a fresh,
+    non-colliding project name without touching GitHub.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "aws_region" {
   description = "AWS region"
   type        = string

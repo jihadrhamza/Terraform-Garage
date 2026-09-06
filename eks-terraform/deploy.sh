@@ -8,8 +8,14 @@
 #
 # Usage:
 #   chmod +x deploy.sh
-#   ./deploy.sh             # deploy all three phases
-#   ./deploy.sh --skip-p3   # deploy phase1 + phase2 only
+#   ./deploy.sh                                   # prompts for AWS creds interactively
+#   ./deploy.sh --skip-p3                         # deploy phase1 + phase2 only
+#   ./deploy.sh --aws-access-key=AKIA... \
+#               --aws-secret-key=xxxxx  \
+#               --aws-region=us-east-1          # supply creds via flags (no prompt)
+#
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION env vars are also
+# honored and take precedence over interactive prompts (but not over flags).
 ###############################################################################
 set -euo pipefail
 
@@ -23,15 +29,81 @@ section() { echo -e "\n${CYAN}════════════════�
             echo -e "${CYAN}══════════════════════════════════════════════${NC}\n"; }
 
 SKIP_PHASE3=false
+CLI_ACCESS_KEY=""
+CLI_SECRET_KEY=""
+CLI_REGION=""
+
 for arg in "$@"; do
-  [[ "$arg" == "--skip-p3" ]] && SKIP_PHASE3=true
+  case "$arg" in
+    --skip-p3) SKIP_PHASE3=true ;;
+    --aws-access-key=*) CLI_ACCESS_KEY="${arg#*=}" ;;
+    --aws-secret-key=*) CLI_SECRET_KEY="${arg#*=}" ;;
+    --aws-region=*)     CLI_REGION="${arg#*=}" ;;
+    *) warn "Unknown argument: $arg" ;;
+  esac
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ---------------------------------------------------------------------------
-# Pre-flight: ensure tfvars are filled in
+# Collect AWS credentials: flag > env var > interactive prompt
+# ---------------------------------------------------------------------------
+collect_credentials() {
+  AWS_ACCESS_KEY_ID_INPUT="${CLI_ACCESS_KEY:-${AWS_ACCESS_KEY_ID:-}}"
+  AWS_SECRET_ACCESS_KEY_INPUT="${CLI_SECRET_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
+  AWS_REGION_INPUT="${CLI_REGION:-${AWS_REGION:-}}"
+
+  if [[ -z "$AWS_ACCESS_KEY_ID_INPUT" ]]; then
+    read -rp "AWS Access Key ID: " AWS_ACCESS_KEY_ID_INPUT
+  fi
+  if [[ -z "$AWS_SECRET_ACCESS_KEY_INPUT" ]]; then
+    read -rsp "AWS Secret Access Key: " AWS_SECRET_ACCESS_KEY_INPUT
+    echo
+  fi
+  if [[ -z "$AWS_REGION_INPUT" ]]; then
+    read -rp "AWS Region [us-east-1]: " AWS_REGION_INPUT
+    AWS_REGION_INPUT="${AWS_REGION_INPUT:-us-east-1}"
+  fi
+
+  if [[ -z "$AWS_ACCESS_KEY_ID_INPUT" || -z "$AWS_SECRET_ACCESS_KEY_INPUT" ]]; then
+    error "AWS access key and secret key are required."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Write/replace a key = "value" line in a tfvars file (adds it if missing)
+# ---------------------------------------------------------------------------
+set_tfvar() {
+  local file="$1" key="$2" value="$3"
+  if [[ ! -f "$file" ]]; then
+    warn "$file not found — skipping."
+    return
+  fi
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+    sed -i.bak -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = \"${value}\"|" "$file"
+    rm -f "${file}.bak"
+  else
+    echo "${key} = \"${value}\"" >> "$file"
+  fi
+}
+
+update_all_tfvars() {
+  local phases=(phase1 phase2)
+  $SKIP_PHASE3 || phases+=(phase3)
+
+  for dir in "${phases[@]}"; do
+    local f="$SCRIPT_DIR/$dir/terraform.tfvars"
+    set_tfvar "$f" "aws_access_key" "$AWS_ACCESS_KEY_ID_INPUT"
+    set_tfvar "$f" "aws_secret_key" "$AWS_SECRET_ACCESS_KEY_INPUT"
+    set_tfvar "$f" "aws_region"     "$AWS_REGION_INPUT"
+    info "Updated AWS credentials in $dir/terraform.tfvars"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Pre-flight: ensure remaining (non-AWS) tfvars placeholders are filled in
+# e.g. github_organization / github_repository in phase3
 # ---------------------------------------------------------------------------
 check_creds() {
   local dir=$1
@@ -39,6 +111,10 @@ check_creds() {
     error "Fill in all placeholder values in $dir/terraform.tfvars before running."
   fi
 }
+
+section "Collecting AWS credentials"
+collect_credentials
+update_all_tfvars
 
 check_creds "phase1"
 check_creds "phase2"
@@ -116,20 +192,17 @@ else
   section "Granting CodeBuild runner EKS cluster-admin access"
 
   CLUSTER_NAME=$(cd "$SCRIPT_DIR/phase1" && terraform output -raw cluster_name 2>/dev/null || echo "")
-  AWS_REGION=$(cd "$SCRIPT_DIR/phase1" && terraform output -raw aws_region     2>/dev/null || \
-               grep 'aws_region' "$SCRIPT_DIR/phase1/terraform.tfvars" | awk -F'"' '{print $2}')
+  AWS_REGION_FOR_EKS=$(cd "$SCRIPT_DIR/phase1" && terraform output -raw aws_region 2>/dev/null || echo "$AWS_REGION_INPUT")
 
   if [[ -z "$CLUSTER_NAME" || -z "$CODEBUILD_ROLE" ]]; then
     warn "Could not determine cluster name or CodeBuild role ARN — skipping EKS access entry."
     warn "Run manually:  terraform output -raw eks_auth_patch_command  (in phase3/)"
   else
-    # Source AWS creds from phase1 tfvars so the CLI call works without env vars
-    AWS_ACCESS_KEY=$(grep 'aws_access_key' "$SCRIPT_DIR/phase1/terraform.tfvars" | awk -F'"' '{print $2}')
-    AWS_SECRET_KEY=$(grep 'aws_secret_key' "$SCRIPT_DIR/phase1/terraform.tfvars" | awk -F'"' '{print $2}')
-
-    export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY"
-    export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_KEY"
-    export AWS_DEFAULT_REGION="$AWS_REGION"
+    # Use the credentials collected at the start of this run — no need to
+    # re-read them from tfvars.
+    export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID_INPUT"
+    export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY_INPUT"
+    export AWS_DEFAULT_REGION="$AWS_REGION_FOR_EKS"
 
     info "Creating EKS access entry for CodeBuild role..."
     # create-access-entry is idempotent — safe to re-run
@@ -137,7 +210,7 @@ else
       --cluster-name  "$CLUSTER_NAME" \
       --principal-arn "$CODEBUILD_ROLE" \
       --type          STANDARD \
-      --region        "$AWS_REGION" 2>/dev/null || \
+      --region        "$AWS_REGION_FOR_EKS" 2>/dev/null || \
       warn "Access entry may already exist — continuing."
 
     info "Associating AmazonEKSClusterAdminPolicy..."
@@ -146,13 +219,13 @@ else
       --principal-arn "$CODEBUILD_ROLE" \
       --policy-arn    "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy" \
       --access-scope  type=cluster \
-      --region        "$AWS_REGION" 2>/dev/null || \
+      --region        "$AWS_REGION_FOR_EKS" 2>/dev/null || \
       warn "Policy association may already exist — continuing."
 
     info "EKS access entry created. Verifying..."
     aws eks list-access-entries \
       --cluster-name "$CLUSTER_NAME" \
-      --region       "$AWS_REGION" \
+      --region       "$AWS_REGION_FOR_EKS" \
       --query        "accessEntries[?contains(@, 'codebuild')]" \
       --output       table 2>/dev/null || true
 

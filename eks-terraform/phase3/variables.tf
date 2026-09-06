@@ -31,6 +31,16 @@ variable "environment" {
   default     = "sandbox"
 }
 
+variable "deployment_suffix" {
+  description = <<-EOT
+    Optional suffix appended to the CodeBuild project name (e.g. "v2", "retry1").
+    Bump this to sidestep a stale GitHub Actions webhook left over from a
+    previous run/account without needing to delete it from GitHub first.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "github_organization" {
   description = "GitHub organization name or username (e.g. Books-POCGroups)"
   type        = string

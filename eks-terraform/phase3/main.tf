@@ -40,6 +40,7 @@ module "codebuild" {
 
   project_name        = var.project_name
   environment         = var.environment
+  deployment_suffix   = var.deployment_suffix
   aws_region          = var.aws_region
   aws_account_id      = local.aws_account_id
   github_organization = var.github_organization
